@@ -16,7 +16,7 @@
     <h1>System Architecture & Design Choices</h1>
     
     <div class="highlight">
-        <strong>Executive Summary:</strong> The system implements a reactive ARQ (Automatic Repeat reQuest) protocol using non-blocking UDP sockets in C++, optimized for low-latency recovery over a hostile network.
+        <strong>Executive Summary:</strong> The system implements a reactive ARQ (Automatic Repeat reQuest) protocol using non-blocking UDP sockets in C++, optimized for low-latency recovery over a hostile, burst-loss network.
     </div>
 
     <h2>1. The Sender Architecture</h2>
@@ -28,8 +28,8 @@
     <h2>3. Design Choice: ARQ vs. FEC</h2>
     <p>Given the constraints of a 2.0x bandwidth cap and a strict deadline miss rate of &le; 1%, the architecture leverages ARQ over Forward Error Correction (FEC). </p>
     <ul>
-        <li><strong>Overhead Efficiency:</strong> Sending proactive FEC data (like XOR parity or duplicate frames) scales bandwidth usage linearly. By using 4-byte NACKs, the feedback overhead is negligible (yielding a total bandwidth overhead of ~1.2x).</li>
-        <li><strong>Aggressive Recovery:</strong> To combat the RTT (Round Trip Time) penalty of ARQ, the receiver aggressively scans for gaps between the <code>expected_seq</code> and the <code>max_seen_seq</code> every 5 milliseconds. It spams NACKs for any missing frames until the gap is filled, maximizing the chance of recovery before the playout deadline.</li>
+        <li><strong>Overhead Efficiency:</strong> Sending proactive FEC data scales bandwidth usage linearly. By using 4-byte NACKs, the feedback overhead is negligible (yielding a total bandwidth overhead of ~1.3x).</li>
+        <li><strong>Burst-Loss Resilience (Throttling):</strong> To combat severe burst losses without exceeding the bandwidth cap, the receiver scans for sequence gaps and throttles its NACK requests to exactly once every 25 milliseconds. This prevents NACK flooding during heavy drops while ensuring the sender has enough time to recover the missing frames before the 250ms playout deadline.</li>
     </ul>
 </body>
 </html>

@@ -68,7 +68,7 @@ int main() {
 
         // 3. Spam NACKs for any gaps every 5ms
         auto now = chrono::steady_clock::now();
-        if (chrono::duration_cast<chrono::milliseconds>(now - last_nack_time).count() > 5) {
+        if (chrono::duration_cast<chrono::milliseconds>(now - last_nack_time).count() > 25) {
             for (uint32_t s = expected_seq; s < max_seen_seq; s++) {
                 if (!buffer.count(s)) {
                     uint32_t net_s = htonl(s); 

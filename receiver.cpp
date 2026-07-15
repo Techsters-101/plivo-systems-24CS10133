@@ -1,49 +1,84 @@
-/* BASELINE RECEIVER (C) — naive on purpose. Rewrite it (C, C++, Go, or Rust).
- *
- * Ports (all 127.0.0.1):
- *   bind 47002  <- media from your sender, via the hostile relay
- *   send 47020  -> harness player. MUST be: 4-byte big-endian seq +
- *                  160-byte payload. Frame i counts only if it arrives
- *                  BEFORE its deadline t0 + DELAY_MS + i*20ms.
- *   send 47003  -> feedback to your sender, via the relay (optional)
- *
- * This baseline forwards whatever arrives straight to the player: lost
- * frames stay lost, late frames stay late, duplicates are re-sent
- * harmlessly. All yours to fix — jitter buffer, reordering, recovery.
- *
- * Env vars available: T0, DURATION_S, DELAY_MS. Harness kills the process
- * at run end; a forever-loop is fine.
- */
 #include <arpa/inet.h>
-#include <stdio.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <map>
+#include <array>
+#include <stdint.h>
+#include <cstring>
+#include <chrono>
 
-int main(void) {
+using namespace std;
+
+void set_nonblock(int fd) {
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+}
+
+int main() {
     int in_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    struct sockaddr_in in_addr = {0};
+    sockaddr_in in_addr = {0};
     in_addr.sin_family = AF_INET;
     in_addr.sin_port = htons(47002);
     in_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    if (bind(in_fd, (struct sockaddr *)&in_addr, sizeof in_addr) < 0) {
-        perror("bind 47002");
-        return 1;
-    }
+    bind(in_fd, (sockaddr *)&in_addr, sizeof(in_addr));
+    set_nonblock(in_fd);
 
-    int out_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    struct sockaddr_in player = {0};
+    int player_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in player = {0};
     player.sin_family = AF_INET;
     player.sin_port = htons(47020);
     player.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    unsigned char buf[2048];
-    for (;;) {
-        ssize_t n = recvfrom(in_fd, buf, sizeof buf, 0, NULL, NULL);
-        if (n <= 0) continue;
-        /* jitter buffer / reorder / recovery logic goes here */
-        sendto(out_fd, buf, (size_t)n, 0, (struct sockaddr *)&player,
-               sizeof player);
+    int nack_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in nack_relay = {0};
+    nack_relay.sin_family = AF_INET;
+    nack_relay.sin_port = htons(47003);
+    nack_relay.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    map<uint32_t, array<uint8_t, 164>> buffer;
+    uint32_t expected_seq = 0;
+    uint32_t max_seen_seq = 0;
+    auto last_nack_time = chrono::steady_clock::now();
+
+    uint8_t buf[2048];
+
+    while (true) {
+        // 1. Receive data from network
+        ssize_t n = recvfrom(in_fd, buf, sizeof(buf), 0, nullptr, nullptr);
+        if (n == 164) {
+            uint32_t seq;
+            memcpy(&seq, buf, 4);
+            seq = ntohl(seq);
+            
+            array<uint8_t, 164> pkt;
+            memcpy(pkt.data(), buf, 164);
+            buffer[seq] = pkt;
+
+            if (seq > max_seen_seq) {
+                max_seen_seq = seq;
+            }
+        }
+
+        // 2. Push contiguous packets to the player
+        while (buffer.count(expected_seq)) {
+            sendto(player_fd, buffer[expected_seq].data(), 164, 0, (sockaddr *)&player, sizeof(player));
+            buffer.erase(expected_seq);
+            expected_seq++;
+        }
+
+        // 3. Spam NACKs for any gaps every 5ms
+        auto now = chrono::steady_clock::now();
+        if (chrono::duration_cast<chrono::milliseconds>(now - last_nack_time).count() > 5) {
+            for (uint32_t s = expected_seq; s < max_seen_seq; s++) {
+                if (!buffer.count(s)) {
+                    uint32_t net_s = htonl(s); 
+                    sendto(nack_fd, &net_s, 4, 0, (sockaddr *)&nack_relay, sizeof(nack_relay));
+                }
+            }
+            last_nack_time = now;
+        }
+        
+        usleep(100); 
     }
     return 0;
 }
